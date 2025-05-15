@@ -18,100 +18,140 @@ from .utils import encode_labels # Assuming utils.py is in the same directory
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# In model_training_service/scripts/data_loader.py
+import torch
+from torch.utils.data import Dataset
+import pandas as pd
+import numpy as np
+import io
+import random # Added
+# from . import config_training # Assuming config_training.py is in the same directory or adjust path
+
 class FusionDataset(Dataset):
-    def __init__(self, study_metadatas, minio_client):
-        """
-        Args:
-            study_metadatas (list of dicts): List of study records from patient_data_service,
-                                             each containing paths to processed features.
-            minio_client (Minio): Initialized MinIO client.
-        """
-        self.study_metadatas = study_metadatas
+    def __init__(self, patient_studies_df, minio_client, bucket_name,
+                 # Expected feature dimensions (should come from config)
+                 img_feature_dim, nih_feature_dim, sensor_feature_dim,
+                 label_cols, training_mode=True, # Added training_mode
+                 img_feat_path_col='image_features_path',
+                 nih_feat_path_col='nih_features_path',
+                 sensor_feat_path_col='sensor_features_path',
+                 mask_image_prob=0.15, mask_nih_prob=0.15, mask_sensor_prob=0.15): # Masking probabilities
+
+        self.patient_studies_df = patient_studies_df
         self.minio_client = minio_client
-        logger.info(f"FusionDataset initialized with {len(self.study_metadatas)} studies.")
+        self.bucket_name = bucket_name
+        # self.image_processor = image_processor # Not used here if features are pre-extracted
+
+        self.img_feat_path_col = img_feat_path_col
+        self.nih_feat_path_col = nih_feat_path_col
+        self.sensor_feat_path_col = sensor_feat_path_col
+        
+        self.img_feature_dim = img_feature_dim
+        self.nih_feature_dim = nih_feature_dim
+        self.sensor_feature_dim = sensor_feature_dim
+
+        self.label_cols = label_cols
+        self.training_mode = training_mode # For enabling/disabling random masking
+        self.mask_image_prob = mask_image_prob
+        self.mask_nih_prob = mask_nih_prob
+        self.mask_sensor_prob = mask_sensor_prob
 
     def __len__(self):
-        return len(self.study_metadatas)
+        return len(self.patient_studies_df)
 
-    def _load_feature_from_minio(self, bucket_name, object_name):
-        try:
-            response = self.minio_client.get_object(bucket_name, object_name)
-            feature_bytes = response.read()
-            response.close()
-            response.release_conn()
-
-            if object_name.endswith('.pt'):
-                feature_tensor = torch.load(io.BytesIO(feature_bytes))
-            elif object_name.endswith('.npy'):
-                feature_array = np.load(io.BytesIO(feature_bytes))
-                feature_tensor = torch.from_numpy(feature_array).float() # Ensure float
-            else:
-                logger.error(f"Unsupported feature file type for {object_name} in bucket {bucket_name}")
-                return None
-            return feature_tensor
-        except Exception as e:
-            logger.error(f"Error loading feature {object_name} from bucket {bucket_name}: {e}", exc_info=True)
+    def _load_npy_from_minio(self, object_name):
+        if pd.isna(object_name):
             return None
-
+        try:
+            response = self.minio_client.get_object(self.bucket_name, object_name)
+            content = response.read()
+            return np.load(io.BytesIO(content))
+        except Exception as e:
+            print(f"Error loading {object_name} from MinIO: {e}")
+            return None
+        finally:
+            if 'response' in locals():
+                response.close()
+                response.release_conn()
+                
     def __getitem__(self, idx):
-        study_info = self.study_metadatas[idx]
-        image_index = study_info.get('image_index', f"unknown_index_{idx}") # For logging
+        study_info = self.patient_studies_df.iloc[idx]
 
-        # Load Image Features
-        img_feat_path = study_info.get('processed_image_features_path')
-        if img_feat_path:
-            image_features = self._load_feature_from_minio(BUCKET_PROCESSED_IMAGE_FEATURES, img_feat_path)
-            if image_features is None: # Fallback if loading fails
-                logger.warning(f"Image features failed to load for {image_index}, using zeros. Path: {img_feat_path}")
-                image_features = torch.zeros(IMAGE_FEATURE_DIM) # Must match expected dim
-            elif image_features.shape[0] != IMAGE_FEATURE_DIM: # Basic shape check
-                logger.error(f"Mismatched image feature dim for {image_index}! Expected {IMAGE_FEATURE_DIM}, Got {image_features.shape}. Path: {img_feat_path}. Using zeros.")
-                image_features = torch.zeros(IMAGE_FEATURE_DIM)
+        img_features_np = self._load_npy_from_minio(study_info.get(self.img_feat_path_col))
+        nih_features_np = self._load_npy_from_minio(study_info.get(self.nih_feat_path_col))
+        sensor_features_np = self._load_npy_from_minio(study_info.get(self.sensor_feat_path_col))
+        
+        labels_np = study_info[self.label_cols].values.astype(np.float32)
+        labels = torch.tensor(labels_np, dtype=torch.float32)
+
+        # --- Image Features ---
+        img_masked_flag = torch.tensor(False, dtype=torch.bool)
+        if img_features_np is None:
+            img_features = torch.zeros(self.img_feature_dim, dtype=torch.float32)
+            img_masked_flag = torch.tensor(True, dtype=torch.bool)
         else:
-            logger.warning(f"Missing image feature path for {image_index}, using zeros.")
-            image_features = torch.zeros(IMAGE_FEATURE_DIM)
-
-
-        # Load NIH Tabular Features
-        nih_feat_path = study_info.get('processed_nih_tabular_features_path')
-        if nih_feat_path:
-            nih_features = self._load_feature_from_minio(BUCKET_PROCESSED_NIH_TABULAR_FEATURES, nih_feat_path)
-            if nih_features is None:
-                logger.warning(f"NIH features failed to load for {image_index}, using zeros. Path: {nih_feat_path}")
-                nih_features = torch.zeros(NIH_TABULAR_FEATURE_DIM)
-            elif nih_features.shape[0] != NIH_TABULAR_FEATURE_DIM:
-                 logger.error(f"Mismatched NIH feature dim for {image_index}! Expected {NIH_TABULAR_FEATURE_DIM}, Got {nih_features.shape}. Path: {nih_feat_path}. Using zeros.")
-                 nih_features = torch.zeros(NIH_TABULAR_FEATURE_DIM)
+            img_features = torch.tensor(img_features_np, dtype=torch.float32).squeeze() # Ensure 1D
+            if self.training_mode and random.random() < self.mask_image_prob:
+                img_features = torch.zeros_like(img_features)
+                img_masked_flag = torch.tensor(True, dtype=torch.bool)
+        
+        # --- NIH Features ---
+        nih_masked_flag = torch.tensor(False, dtype=torch.bool)
+        if nih_features_np is None:
+            nih_features = torch.zeros(self.nih_feature_dim, dtype=torch.float32)
+            nih_masked_flag = torch.tensor(True, dtype=torch.bool)
         else:
-            logger.warning(f"Missing NIH feature path for {image_index}, using zeros.")
-            nih_features = torch.zeros(NIH_TABULAR_FEATURE_DIM)
+            nih_features = torch.tensor(nih_features_np, dtype=torch.float32).squeeze() # Ensure 1D
+            if self.training_mode and random.random() < self.mask_nih_prob:
+                nih_features = torch.zeros_like(nih_features)
+                nih_masked_flag = torch.tensor(True, dtype=torch.bool)
 
-        # Load Sensor Features
-        sensor_feat_path = study_info.get('processed_sensor_features_path')
-        if sensor_feat_path:
-            sensor_features = self._load_feature_from_minio(BUCKET_PROCESSED_SENSOR_FEATURES, sensor_feat_path)
-            if sensor_features is None:
-                logger.warning(f"Sensor features failed to load for {image_index}, using zeros. Path: {sensor_feat_path}")
-                sensor_features = torch.zeros(SENSOR_FEATURE_DIM)
-            elif sensor_features.shape[0] != SENSOR_FEATURE_DIM:
-                 logger.error(f"Mismatched sensor feature dim for {image_index}! Expected {SENSOR_FEATURE_DIM}, Got {sensor_features.shape}. Path: {sensor_feat_path}. Using zeros.")
-                 sensor_features = torch.zeros(SENSOR_FEATURE_DIM)
+        # --- Sensor Features ---
+        sensor_masked_flag = torch.tensor(False, dtype=torch.bool)
+        if sensor_features_np is None:
+            sensor_features = torch.zeros(self.sensor_feature_dim, dtype=torch.float32)
+            sensor_masked_flag = torch.tensor(True, dtype=torch.bool)
         else:
-            logger.warning(f"Missing sensor feature path for {image_index}, using zeros.")
-            sensor_features = torch.zeros(SENSOR_FEATURE_DIM)
-
-        # Encode Labels
-        finding_labels_str = study_info.get('finding_labels', "")
-        labels_encoded = encode_labels(finding_labels_str) # From utils.py
-        labels_tensor = torch.from_numpy(labels_encoded).float() # Ensure float for BCEWithLogitsLoss
+            sensor_features = torch.tensor(sensor_features_np, dtype=torch.float32).squeeze() # Ensure 1D
+            if self.training_mode and random.random() < self.mask_sensor_prob:
+                sensor_features = torch.zeros_like(sensor_features)
+                sensor_masked_flag = torch.tensor(True, dtype=torch.bool)
+        
+        # Ensure no modality is entirely masked if it's the only one present (optional safeguard)
+        # For simplicity, current BERT-style masking allows any to be masked.
+        # If all are masked, the model gets all zeros, which is a valid training signal.
 
         return {
-            'image_features': image_features.squeeze(), # Ensure 1D if loaded with extra dim
-            'nih_features': nih_features.squeeze(),
-            'sensor_features': sensor_features.squeeze(),
-            'labels': labels_tensor,
-            'image_index': image_index # For debugging or tracking if needed
+            'img_features': img_features,
+            'nih_features': nih_features,
+            'sensor_features': sensor_features,
+            'img_mask': img_masked_flag,
+            'nih_mask': nih_masked_flag,
+            'sensor_mask': sensor_masked_flag,
+            'labels': labels
         }
+
+def fusion_collate_fn(batch):
+    
+    img_features_batch = torch.stack([item['img_features'] for item in batch])
+    nih_features_batch = torch.stack([item['nih_features'] for item in batch])
+    sensor_features_batch = torch.stack([item['sensor_features'] for item in batch])
+    
+    img_mask_batch = torch.stack([item['img_mask'] for item in batch])
+    nih_mask_batch = torch.stack([item['nih_mask'] for item in batch])
+    sensor_mask_batch = torch.stack([item['sensor_mask'] for item in batch])
+    
+    labels_batch = torch.stack([item['labels'] for item in batch])
+
+    return {
+        'img_features': img_features_batch,
+        'nih_features': nih_features_batch,
+        'sensor_features': sensor_features_batch,
+        'img_mask': img_mask_batch,
+        'nih_mask': nih_mask_batch,
+        'sensor_mask': sensor_mask_batch,
+        'labels': labels_batch
+    }
 
 def fetch_training_ready_studies_from_service():
     """Fetches study metadata from patient_data_service."""
@@ -172,19 +212,6 @@ def get_data_loaders(batch_size, test_split_ratio=0.2, num_workers=0): # num_wor
 if __name__ == '__main__':
     # Test the data loader
     logger.info("Testing DataLoader functionality...")
-    
-    # Ensure your patient_data_service and MinIO are running and populated with some test data.
-    # You'd need to have run ingestion and preprocessing for a few samples.
-    
-    # For local testing, you might need to mock patient_data_service response or MinIO
-    # Or ensure services are up and accessible from where you run this.
-    # This assumes MinIO client can connect and patient_data_service is reachable.
-    
-    # Override config for local test if needed (e.g., if patient_data_service is on localhost)
-    # os.environ["PATIENT_DATA_SERVICE_URL"] = "http://localhost:8000" # If running service locally
-    # from .config_training import PATIENT_DATA_SERVICE_URL # Re-import if changed via env
-    # print(f"Test using Patient Service URL: {PATIENT_DATA_SERVICE_URL}")
-
 
     train_dl, val_dl = get_data_loaders(batch_size=4)
 

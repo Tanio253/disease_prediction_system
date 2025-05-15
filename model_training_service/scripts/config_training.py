@@ -27,13 +27,25 @@ NIH_TABULAR_FEATURE_DIM = int(os.getenv("NIH_TABULAR_FEATURE_DIM_TRAIN", "9")) #
 
 # Example: If 6 sensor types * 5 aggregation methods = 30 features.
 SENSOR_FEATURE_DIM = int(os.getenv("SENSOR_FEATURE_DIM_TRAIN", "30")) # Placeholder
+NUM_CLASSES = 15 # (14 diseases + No Finding)
 
+# For AttentionFusionMLP
+MODEL_EMBED_DIM = 128  # Embedding dimension for modalities before attention
+MODEL_NUM_HEADS = 4    # Number of attention heads
+MODEL_DROPOUT_RATE = 0.3
 # --- Fusion Model Architecture Parameters ---
 # Hidden layer dimensions for the fusion MLP
 HIDDEN_DIMS_MLP = [1024, 512] # Example: two hidden layers
 # NUM_CLASSES is defined in utils.py based on ALL_DISEASE_CLASSES
 DROPOUT_RATE = 0.3
+EXPECTED_IMG_FEATURE_DIM = 512 # Match your image feature extractor output
+EXPECTED_NIH_FEATURE_DIM = 26  # Match your NIH tabular preprocessor output
+EXPECTED_SENSOR_FEATURE_DIM = 20 # Match your sensor preprocessor output
 
+# Masking probabilities for training
+MASK_IMAGE_PROB = 0.15
+MASK_NIH_PROB = 0.15
+MASK_SENSOR_PROB = 0.15
 # --- Training Hyperparameters ---
 LEARNING_RATE = float(os.getenv("LEARNING_RATE", "0.0001")) # 1e-4
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "32"))

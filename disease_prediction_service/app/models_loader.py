@@ -4,200 +4,213 @@ from minio import Minio
 import io
 import logging
 import os
-from sklearn.preprocessing import OneHotEncoder
-import pandas as pd # For dummy DataFrame for encoder fitting
-
-# Assuming your FusionMLP definition is accessible
-# If model_def.py from model_training_service is not in a shared package,
-# you might need to copy/redefine FusionMLP here or make it part of a shared library.
-# For this example, let's assume we redefine a compatible FusionMLP structure or import it.
-#
-# Placeholder: You'd need to ensure the FusionMLP class definition is available.
-# One way is to copy model_training_service/scripts/model_def.py to this service's app directory
-# and adjust imports if necessary. Let's assume model_def.py is copied to app/
-try:
-    from .model_def import FusionMLP # Assumes model_def.py is in the same directory
-except ImportError:
-    # Fallback or error if model_def.py is not found
-    logger = logging.getLogger(__name__)
-    logger.error("model_def.py (FusionMLP definition) not found. Predictions will fail.")
-    # Define a dummy class to prevent import errors, but this won't work for actual prediction
-    class FusionMLP(torch.nn.Module):
-        def __init__(self, *args, **kwargs): super().__init__(); self.fc=torch.nn.Linear(1,1)
-        def forward(self, *args): return self.fc(torch.randn(1,1))
+from sklearn.preprocessing import OneHotEncoder # Keep if you plan to load/save it
+import pandas as pd
+import json # Added
 
 
-from .config import (
-    MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_USE_SSL,
-    BUCKET_MODELS_STORE, FUSION_MODEL_OBJECT_NAME, DEVICE_PRED,
-    IMAGE_PRETRAINED_MODEL_NAME, EXAMPLE_CATEGORIES_PRED, NIH_CATEGORICAL_COLS_PRED,
-    IMAGE_FEATURE_DIM_PRED, NIH_TABULAR_FEATURE_DIM_PRED, SENSOR_FEATURE_DIM_PRED, NUM_CLASSES_PRED
-)
+from .model_def import AttentionFusionMLP
+from .config import settings # Your existing config for service settings
 
 logger = logging.getLogger(__name__)
 
-# Global variables for loaded models and transformers
 image_feature_extractor_model_g = None
-fusion_model_g = None
-nih_data_encoder_g = None # For OneHotEncoder
+fusion_model_g = None # This will now be an AttentionFusionMLP instance
+
+nih_data_encoder_g = None
 device_g = None
-HIDDEN_DIMS_MLP_FOR_PRED = [1024, 512] # Must match training
-DROPOUT_RATE_FOR_PRED = 0.3 # Must match training
+
+
+loaded_components = {
+    "image_feature_extractor": None,
+    "fusion_model": None,
+    "nih_data_encoder": None, # Or more generally 'preprocessing_artifacts'
+    "mlb": None, # MultiLabelBinarizer, should also be loaded from training
+    "training_config": None, # To store loaded training config
+    "device": None
+}
+
 
 def load_image_feature_extractor():
-    global image_feature_extractor_model_g, device_g
-    if image_feature_extractor_model_g is None:
-        logger.info(f"Loading image feature extractor: {IMAGE_PRETRAINED_MODEL_NAME} for prediction.")
+    # global image_feature_extractor_model_g, device_g # Use loaded_components
+    if loaded_components["image_feature_extractor"] is None:
+        logger.info(f"Loading image feature extractor: {settings.IMAGE_PRETRAINED_MODEL_NAME} for prediction.")
         try:
-            if IMAGE_PRETRAINED_MODEL_NAME == "resnet50":
+            if settings.IMAGE_PRETRAINED_MODEL_NAME == "resnet50":
                 weights = models_tv.ResNet50_Weights.IMAGENET1K_V2
                 model = models_tv.resnet50(weights=weights)
-                model.fc = torch.nn.Identity() # Remove classifier
-            elif IMAGE_PRETRAINED_MODEL_NAME == "efficientnet_b0":
+                model.fc = torch.nn.Identity()
+            elif settings.IMAGE_PRETRAINED_MODEL_NAME == "efficientnet_b0":
                 weights = models_tv.EfficientNet_B0_Weights.IMAGENET1K_V1
                 model = models_tv.efficientnet_b0(weights=weights)
-                model.classifier = torch.nn.Identity() # Remove classifier
+                model.classifier = torch.nn.Identity()
             else:
-                raise ValueError(f"Unsupported image feature extractor model: {IMAGE_PRETRAINED_MODEL_NAME}")
+                raise ValueError(f"Unsupported image feature extractor model: {settings.IMAGE_PRETRAINED_MODEL_NAME}")
 
-            device_g = torch.device(DEVICE_PRED if torch.cuda.is_available() and DEVICE_PRED == "cuda" else "cpu")
-            image_feature_extractor_model_g = model.to(device_g)
-            image_feature_extractor_model_g.eval()
-            logger.info(f"Image feature extractor '{IMAGE_PRETRAINED_MODEL_NAME}' loaded on {device_g}.")
+            current_device = torch.device(settings.DEVICE_PRED if torch.cuda.is_available() and settings.DEVICE_PRED == "cuda" else "cpu")
+            loaded_components["image_feature_extractor"] = model.to(current_device)
+            loaded_components["image_feature_extractor"].eval()
+            loaded_components["device"] = current_device # Set device globally once
+            logger.info(f"Image feature extractor '{settings.IMAGE_PRETRAINED_MODEL_NAME}' loaded on {current_device}.")
         except Exception as e:
             logger.error(f"Error loading image feature extractor model: {e}", exc_info=True)
-            raise # Critical for service function
+            raise
 
-def load_fusion_model():
-    global fusion_model_g, device_g # device_g should be set by image extractor loading or here
-    if fusion_model_g is None:
-        logger.info(f"Loading fusion model from MinIO: {BUCKET_MODELS_STORE}/{FUSION_MODEL_OBJECT_NAME}")
-        if device_g is None: # Ensure device is determined
-            device_g = torch.device(DEVICE_PRED if torch.cuda.is_available() and DEVICE_PRED == "cuda" else "cpu")
+def load_fusion_model_and_artifacts():
+    if loaded_components["fusion_model"] is None:
+        model_name = settings.FUSION_MODEL_NAME # Get model name from settings
+        logger.info(f"Loading fusion model artifacts for '{model_name}' from MinIO bucket: {settings.MINIO_BUCKET_MODELS}")
 
-        minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=MINIO_USE_SSL)
+        if loaded_components["device"] is None: # Ensure device is determined
+            loaded_components["device"] = torch.device(settings.DEVICE_PRED if torch.cuda.is_available() and settings.DEVICE_PRED == "cuda" else "cpu")
+        
+        current_device = loaded_components["device"]
+
+        minio_client = Minio(
+            settings.MINIO_ENDPOINT,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=settings.MINIO_USE_SSL
+        )
+
+        training_config_path_minio = f"models/{model_name}/training_config.json"
+        local_training_config_path = f"/tmp/{model_name}_training_config.json" # Ensure unique temp name
         try:
-            model_data = minio_client.get_object(BUCKET_MODELS_STORE, FUSION_MODEL_OBJECT_NAME)
-            model_bytes = model_data.read()
-            
-            # Instantiate model architecture (ensure class definition matches saved model)
-            # The FusionMLP __init__ needs to be compatible with the expected feature dimensions
-            # This relies on IMAGE_FEATURE_DIM_PRED, NIH_TABULAR_FEATURE_DIM_PRED, SENSOR_FEATURE_DIM_PRED
-            # being correctly set in config.py to match the model that was trained and saved.
-            
-            # Re-configure FusionMLP's internal dimensions based on _PRED config values.
-            # This assumes your model_def.FusionMLP can be reconfigured or that the
-            # config values used here match its saved state perfectly.
-            # One way to handle this is for model_def.py to also read these from config.
-            
-            # For FusionMLP as defined in training (it reads dimensions from its own config import):
-            # To make this robust, the FusionMLP class in model_def.py should accept these dims as __init__ args
-            # or the config.py it imports should match the _PRED versions here.
-            # Let's assume the imported FusionMLP class uses the same config mechanism or fixed dims.
-            # We might need to override the config that FusionMLP (from model_def) sees:
-            # This is tricky. Best if FusionMLP takes dims as args:
-            # model_architecture = FusionMLP(img_dim=IMAGE_FEATURE_DIM_PRED, ...)
-
-            # Assuming FusionMLP uses the config values from *its own imported config* which should match:
-            model_architecture = FusionMLP(
-    image_feature_dim=IMAGE_FEATURE_DIM_PRED,
-    nih_tabular_feature_dim=NIH_TABULAR_FEATURE_DIM_PRED,
-    sensor_feature_dim=SENSOR_FEATURE_DIM_PRED,
-    hidden_dims_mlp=HIDDEN_DIMS_MLP_FOR_PRED, # Add this to config.py
-    num_classes=NUM_CLASSES_PRED,
-    dropout_rate=DROPOUT_RATE_FOR_PRED # Add this to config.py
-)
-
-            # A better FusionMLP definition in model_def.py would be:
-            # class FusionMLP(nn.Module):
-            #     def __init__(self, img_dim, nih_dim, sensor_dim, hidden_dims, num_classes, dropout):
-            #         ... self.total_input_dim = img_dim + nih_dim + sensor_dim ...
-            # Then here:
-            # from .config import HIDDEN_DIMS_MLP, DROPOUT_RATE # Assuming these are in current config
-            # model_architecture = FusionMLP(
-            #     img_dim=IMAGE_FEATURE_DIM_PRED,
-            #     nih_dim=NIH_TABULAR_FEATURE_DIM_PRED, # This one especially needs to be accurate!
-            #     sensor_dim=SENSOR_FEATURE_DIM_PRED,
-            #     hidden_dims=HIDDEN_DIMS_MLP, # Need to get this from config too
-            #     num_classes=NUM_CLASSES_PRED,
-            #     dropout=DROPOUT_RATE # from config
-            # )
-
-
-            buffer = io.BytesIO(model_bytes)
-            # Load state_dict. Ensure map_location for device flexibility.
-            model_architecture.load_state_dict(torch.load(buffer, map_location=device_g))
-            
-            fusion_model_g = model_architecture.to(device_g)
-            fusion_model_g.eval()
-            logger.info(f"Fusion model loaded successfully from MinIO onto {device_g}.")
-
+            logger.info(f"Attempting to load training config from: {training_config_path_minio}")
+            minio_client.fget_object(settings.MINIO_BUCKET_MODELS, training_config_path_minio, local_training_config_path)
+            with open(local_training_config_path, 'r') as f:
+                training_config = json.load(f)
+            loaded_components["training_config"] = training_config
+            logger.info(f"Training config for '{model_name}' loaded successfully.")
         except Exception as e:
-            logger.error(f"Error loading fusion model: {e}", exc_info=True)
-            raise # Critical for service function
+            logger.error(f"CRITICAL: Failed to load training_config.json for model '{model_name}' from MinIO: {e}", exc_info=True)
+            raise RuntimeError(f"Could not load training_config.json for model '{model_name}': {e}")
         finally:
-            if 'model_data' in locals():
-                model_data.close()
-                model_data.release_conn()
-
-def load_nih_data_encoder():
-    global nih_data_encoder_g
-    if nih_data_encoder_g is None:
-        logger.info("Initializing OneHotEncoder for NIH data prediction.")
-        # THIS IS CRITICAL: The encoder must be identical to the one used in training/preprocessing.
-        # Option 1 (Ideal): Load a saved, fitted encoder object (e.g., from joblib)
-        # Option 2 (PoC): Re-initialize with the exact same categories.
+            if os.path.exists(local_training_config_path):
+                os.remove(local_training_config_path)
+        
         try:
-            nih_data_encoder_g = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+            model_architecture = AttentionFusionMLP(
+                img_feature_dim=training_config['img_feature_dim'],
+                nih_feature_dim=training_config['nih_feature_dim'],
+                sensor_feature_dim=training_config['sensor_feature_dim'],
+                num_classes=training_config['num_classes'],
+                embed_dim=training_config['embed_dim'],
+                num_heads=training_config['num_heads'],
+                dropout_rate=training_config.get('dropout_rate', 0.3) # Default if not in older config
+            )
+        except KeyError as e:
+            logger.error(f"CRITICAL: Missing key {e} in loaded training_config.json. Cannot initialize model.")
+            raise RuntimeError(f"Missing key {e} in training_config.json for model '{model_name}'.")
+
+        
+        model_state_dict_path_minio = f"models/{model_name}/{settings.FUSION_MODEL_STATE_DICT_FILENAME}" # e.g., "model.pt" or "best_model.pt"
+        local_model_state_dict_path = f"/tmp/{model_name}_model_state.pt"
+        try:
+            logger.info(f"Attempting to load model state_dict from: {model_state_dict_path_minio}")
+            minio_client.fget_object(settings.MINIO_BUCKET_MODELS, model_state_dict_path_minio, local_model_state_dict_path)
+            model_architecture.load_state_dict(torch.load(local_model_state_dict_path, map_location=current_device))
             
-            # Create a dummy DataFrame with all possible categories to "fit" the encoder
-            # This MUST match the categories and column order used in tabular_preprocessing_service
+            loaded_components["fusion_model"] = model_architecture.to(current_device)
+            loaded_components["fusion_model"].eval()
+            logger.info(f"Fusion model '{model_name}' state_dict loaded successfully onto {current_device}.")
+        except Exception as e:
+            logger.error(f"CRITICAL: Error loading fusion model state_dict for '{model_name}': {e}", exc_info=True)
+            raise RuntimeError(f"Could not load model state_dict for '{model_name}': {e}")
+        finally:
+            if os.path.exists(local_model_state_dict_path):
+                os.remove(local_model_state_dict_path)
+          
+
+        mlb_path_minio = f"models/{model_name}/mlb.joblib" # Or .pkl, adjust as per saving
+        local_mlb_path = f"/tmp/{model_name}_mlb.joblib"
+        try:
+            logger.info(f"Attempting to load MLB from: {mlb_path_minio}")
+            minio_client.fget_object(settings.MINIO_BUCKET_MODELS, mlb_path_minio, local_mlb_path)
+         
+            import pickle # Example using pickle
+            with open(local_mlb_path, 'rb') as f:
+                loaded_components["mlb"] = pickle.load(f)
+            logger.info(f"MLB for '{model_name}' loaded successfully.")
+        except Exception as e:
+            logger.error(f"Warning: Could not load MLB for model '{model_name}' from MinIO: {e}. Check if it was saved correctly.", exc_info=True)
+            
+        if loaded_components.get("nih_data_encoder") is None and settings.LOAD_NIH_ENCODER_FROM_FILE is False: # Control via config
+            load_nih_data_encoder_refit_logic() # Calls the re-fitting logic
+
+def load_nih_data_encoder_refit_logic():
+    """
+    Re-fits OneHotEncoder based on config.
+    WARNING: Prone to discrepancies if config doesn't perfectly match training.
+    It's highly recommended to save and load the fitted encoder from training.
+    """
+    if loaded_components["nih_data_encoder"] is None:
+        logger.warning("Attempting to re-initialize OneHotEncoder for NIH data. "
+                       "It's STRONGLY recommended to load a saved, fitted encoder from training.")
+        try:
+            ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
             dummy_data_for_encoder = {}
             valid_cols_for_fitting = []
-            for col in NIH_CATEGORICAL_COLS_PRED: # These are the columns encoder expects
-                if col in EXAMPLE_CATEGORIES_PRED:
-                    dummy_data_for_encoder[col] = EXAMPLE_CATEGORIES_PRED[col]
-                    valid_cols_for_fitting.append(col)
-                else: # Should not happen if config is correct
-                    logger.warning(f"No example categories defined in config for '{col}'. Encoder might be misconfigured.")
-                    dummy_data_for_encoder[col] = ['UnknownCategoryEncountered'] # Placeholder
-                    valid_cols_for_fitting.append(col)
 
-
+            for col in settings.NIH_CATEGORICAL_COLS_PRED:
+                if col in settings.EXAMPLE_CATEGORIES_PRED and settings.EXAMPLE_CATEGORIES_PRED[col]:
+                    dummy_data_for_encoder[col] = settings.EXAMPLE_CATEGORIES_PRED[col]
+                    valid_cols_for_fitting.append(col)
+                else:
+                    logger.warning(f"No example categories defined in config for '{col}' for OHE fitting. Using a placeholder.")
+                    # Using a placeholder to allow fit, but this might not match training.
+                    dummy_data_for_encoder[col] = [f"Placeholder_{col}"]
+                    valid_cols_for_fitting.append(col)
+            
             if not valid_cols_for_fitting:
-                logger.error("No valid columns to fit OneHotEncoder based on NIH_CATEGORICAL_COLS_PRED. Check config.")
-                # This is a critical failure.
-                raise ValueError("Cannot fit OneHotEncoder due to missing column configurations.")
+                logger.error("No valid columns found to fit OneHotEncoder based on NIH_CATEGORICAL_COLS_PRED. Check config.")
+                # This might be okay if there are no categorical columns expected.
+                loaded_components["nih_data_encoder"] = None # Explicitly set to None if no fitting occurs
+                return
 
             dummy_df_encoder = pd.DataFrame(dummy_data_for_encoder)
-            # Ensure the columns being fitted are only those in NIH_CATEGORICAL_COLS_PRED
-            # and in the correct order if the original training encoder relied on it.
-            # Here, we just use the list of columns for which we have categories.
-            nih_data_encoder_g.fit(dummy_df_encoder[valid_cols_for_fitting]) # Fit only on relevant columns
-            
-            # Validate output dimension:
-            # The number of output features from this encoder should match a portion of NIH_TABULAR_FEATURE_DIM_PRED
-            # (the other part being numerical features like age).
-            # This is complex to auto-validate here without knowing the numerical part.
-            # The user MUST ensure NIH_TABULAR_FEATURE_DIM_PRED is correctly set in config.
-            logger.info(f"OneHotEncoder for NIH data initialized and 'fitted' with example categories for columns: {valid_cols_for_fitting}.")
-            logger.info(f"Encoder output features: {nih_data_encoder_g.get_feature_names_out(valid_cols_for_fitting)}")
+            ohe.fit(dummy_df_encoder[valid_cols_for_fitting])
+            loaded_components["nih_data_encoder"] = ohe
+            logger.info(f"OneHotEncoder for NIH data re-initialized and 'fitted' for columns: {valid_cols_for_fitting}.")
+            logger.info(f"Encoder output features: {ohe.get_feature_names_out(valid_cols_for_fitting)}")
 
         except Exception as e:
-            logger.error(f"Error initializing/fitting OneHotEncoder for NIH data: {e}", exc_info=True)
-            raise # Critical
+            logger.error(f"Error re-initializing/fitting OneHotEncoder for NIH data: {e}", exc_info=True)
+            loaded_components["nih_data_encoder"] = None
 
-def get_models_and_transformers():
-    # This function ensures all necessary components are loaded.
-    # It will be called by Depends in the API endpoint.
-    if image_feature_extractor_model_g is None:
+
+def get_model_components():
+    """
+    Ensures all necessary components are loaded and returns them.
+    This function will be called, e.g., via FastAPI's Depends.
+    """
+    if loaded_components["device"] is None: # Try to determine device early
+        loaded_components["device"] = torch.device(settings.DEVICE_PRED if torch.cuda.is_available() and settings.DEVICE_PRED == "cuda" else "cpu")
+
+    if loaded_components["image_feature_extractor"] is None and settings.LOAD_IMAGE_EXTRACTOR: # Control via config
         load_image_feature_extractor()
-    if fusion_model_g is None:
-        load_fusion_model()
-    if nih_data_encoder_g is None:
-        load_nih_data_encoder()
-    return image_feature_extractor_model_g, fusion_model_g, nih_data_encoder_g, device_g
+    
+    if loaded_components["fusion_model"] is None:
+        load_fusion_model_and_artifacts() # This now loads model, config, mlb, etc.
 
-# Call loading functions once at import time (if service structure allows for it, e.g. Uvicorn workers)
-# Or, more robustly, use FastAPI's startup event.
-# For simplicity in this file, we'll rely on get_models_and_transformers() being called.
+
+    if loaded_components["fusion_model"] is None:
+        raise RuntimeError("Fusion model could not be loaded. Prediction service cannot operate.")
+    if loaded_components["mlb"] is None and settings.REQUIRE_MLB: # Control if MLB is strictly required
+         logger.warning("MLB (MultiLabelBinarizer) is not loaded. Decoding predictions might fail or be inaccurate.")
+         # raise RuntimeError("MLB is required but could not be loaded.")
+
+
+    return loaded_components
+
+from fastapi import FastAPI
+app = FastAPI() # Assuming 'app' is your FastAPI instance, defined in main.py usually
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Application startup: Pre-loading models and components...")
+    try:
+        get_model_components() # This will trigger all loading functions
+        logger.info("Models and components pre-loaded successfully.")
+    except Exception as e:
+        logger.critical(f"Failed to preload models during startup: {e}", exc_info=True)
+        # Depending on policy, you might want to prevent startup or allow it with degraded functionality.
