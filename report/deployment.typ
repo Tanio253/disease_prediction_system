@@ -12,10 +12,3 @@ To deploy the system locally:
 2.  Create a `.env` file based on `.env.example` if provided, or ensure variables are set.
 3.  Build the Docker images for each service using `docker-compose build`.
 4.  Start all services using `docker-compose up -d`.
-
-For a production environment, more advanced orchestration tools like Kubernetes would be recommended, along with considerations for:
-- *Scalability:* Replicating service instances based on load.
-- *Monitoring & Logging:* Centralized logging (e.g., ELK stack) and monitoring (e.g., Prometheus, Grafana).
-- *Security:* Enhanced network policies, secrets management, HTTPS termination.
-- *CI/CD:* Automated build, test, and deployment pipelines.
-- *Cloud Deployment:* The current setup with Docker allows for deployment to cloud platforms like AWS (ECS/EKS), Azure (AKS/ACI), or Google Cloud (GKE/Cloud Run) with appropriate adaptations for managed services (e.g., RDS for PostgreSQL, S3 for object storage).

@@ -21,7 +21,7 @@ The ingestion process is initiated through the `data_ingestion_service`:
 
 // Remember to create this diagram and place it in the images folder
 #figure(
-  image("images/data_ingestion_service.png", width: 90%),
+  image("images/data_ingestion_service.png", width: 100%),
   caption: [Data Ingestion Flow Diagram. Details the sequence from batch ingestion to storage and preprocessing triggers.]
 )
 
@@ -47,11 +47,11 @@ Preprocessing is handled by specialized services:
     - Updates the study record in `patient_data_service` with MinIO paths for both types of tabular features.
 
 // Remember to create this diagram and place it in the images folder
-// #figure(
-//   image("images/image_preprocessing_flow_diagram.png", width: 90%),
-//   caption: [Detailed diagram for Image Preprocessing flow.]
-// )
-// [PLACEHOLDER: Detailed diagram for one preprocessing flow (e.g., Image Preprocessing) showing data retrieval from MinIO, processing steps, feature extraction, and storage back to MinIO, plus metadata update in Patient Data Service.]
+#figure(
+  image("images/image_preprocessing.png", width: 40%),
+  caption: [Detailed diagram for Image Preprocessing flow.]
+)
+
 
 == Data Storage
 The system utilizes two primary storage solutions:
