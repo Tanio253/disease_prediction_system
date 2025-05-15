@@ -1,82 +1,119 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks # Add BackgroundTasks
 from typing import List
 import pandas as pd
 import logging
-import io # For creating in-memory CSV
+import io
+import httpx # For making calls to other services
 
-from .config import BUCKET_RAW_IMAGES, BUCKET_RAW_SENSOR_DATA_PER_STUDY
+from .config import (
+    BUCKET_RAW_IMAGES, BUCKET_RAW_SENSOR_DATA_PER_STUDY,
+    IMAGE_PREPROCESSING_ENDPOINT, TABULAR_NIH_PREPROCESSING_ENDPOINT, TABULAR_SENSOR_PREPROCESSING_ENDPOINT # Import new endpoints
+)
 from .minio_client import get_minio_client, Minio
 from .patient_service_client import create_or_get_patient, create_or_update_study
 from .utils import clean_age_from_str, get_image_index_from_filename
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Data Ingestion Service",
-    description="Ingests raw NIH metadata, sensor data, and images for disease prediction.",
-    version="0.1.0"
+    description="Ingests raw NIH metadata, sensor data, and images for disease prediction and triggers preprocessing.",
+    version="0.2.0" # Version bump
 )
+
+# --- Background Task for Preprocessing ---
+async def trigger_preprocessing_tasks(image_index: str):
+    """
+    Asynchronously calls the preprocessing services for a given image_index.
+    """
+    payload = {"image_index": image_index}
+    timeout_config = httpx.Timeout(10.0, read=120.0) # 10s connect, 120s read
+
+    async with httpx.AsyncClient(timeout=timeout_config) as client:
+        # Trigger Image Preprocessing
+        try:
+            logger.info(f"Triggering image preprocessing for {image_index} at {IMAGE_PREPROCESSING_ENDPOINT}")
+            response_img = await client.post(IMAGE_PREPROCESSING_ENDPOINT, json=payload)
+            response_img.raise_for_status()
+            logger.info(f"Image preprocessing triggered for {image_index}. Status: {response_img.status_code}. Response: {response_img.json()}")
+        except Exception as e:
+            logger.error(f"Failed to trigger image preprocessing for {image_index}: {e}", exc_info=True)
+
+        # Trigger Tabular NIH Metadata Preprocessing
+        if TABULAR_NIH_PREPROCESSING_ENDPOINT: # Check if configured
+            try:
+                logger.info(f"Triggering NIH tabular preprocessing for {image_index} at {TABULAR_NIH_PREPROCESSING_ENDPOINT}")
+                response_nih = await client.post(TABULAR_NIH_PREPROCESSING_ENDPOINT, json=payload)
+                response_nih.raise_for_status()
+                logger.info(f"NIH tabular preprocessing triggered for {image_index}. Status: {response_nih.status_code}. Response: {response_nih.json()}")
+            except Exception as e:
+                logger.error(f"Failed to trigger NIH tabular preprocessing for {image_index}: {e}", exc_info=True)
+
+        # Trigger Tabular Sensor Data Preprocessing
+        if TABULAR_SENSOR_PREPROCESSING_ENDPOINT: # Check if configured
+            try:
+                logger.info(f"Triggering Sensor tabular preprocessing for {image_index} at {TABULAR_SENSOR_PREPROCESSING_ENDPOINT}")
+                response_sensor = await client.post(TABULAR_SENSOR_PREPROCESSING_ENDPOINT, json=payload)
+                response_sensor.raise_for_status()
+                logger.info(f"Sensor tabular preprocessing triggered for {image_index}. Status: {response_sensor.status_code}. Response: {response_sensor.json()}")
+            except Exception as e:
+                logger.error(f"Failed to trigger Sensor tabular preprocessing for {image_index}: {e}", exc_info=True)
+
 
 @app.on_event("startup")
 async def startup_event():
-    # Initialize MinIO client on startup to check connection early
-    # Or simply let it be lazily loaded on first request via Depends
     try:
         client = get_minio_client()
         logger.info("MinIO client accessible at startup.")
-        # Optionally check and create buckets if not handled by docker-compose
-        # SENSITIVE_check_and_create_bucket(client, BUCKET_RAW_IMAGES)
-        # SENSITIVE_check_and_create_bucket(client, BUCKET_RAW_SENSOR_DATA_PER_STUDY)
     except Exception as e:
         logger.error(f"Failed to initialize MinIO client at startup: {e}")
-        # Depending on policy, you might want to prevent startup
-        # raise RuntimeError("MinIO client initialization failed") from e
 
-
-@app.post("/ingest/batch/", summary="Ingest NIH metadata, sensor data, and images in batch")
+@app.post("/ingest/batch/", summary="Ingest NIH metadata, sensor data, and images in batch and trigger preprocessing")
 async def ingest_batch_data(
-    nih_metadata_file: UploadFile = File(..., description="CSV file with NIH metadata (your 5606 sample)"),
+    background_tasks: BackgroundTasks, # Inject BackgroundTasks
+    nih_metadata_file: UploadFile = File(..., description="CSV file with NIH metadata"),
     sensor_data_file: UploadFile = File(..., description="CSV file with generated sensor data"),
-    image_files: List[UploadFile] = File(..., description="List of X-ray image files (e.g., PNGs)"),
+    image_files: List[UploadFile] = File(..., description="List of X-ray image files"),
     minio: Minio = Depends(get_minio_client)
 ):
-    logger.info("Starting batch ingestion process...")
     results_summary = {
         "total_studies_in_metadata": 0,
-        "studies_processed_successfully": 0,
+        "studies_ingested_successfully": 0, # Renamed for clarity
+        "preprocessing_tasks_queued": 0,
         "patients_created_or_updated": 0,
-        "studies_created_or_updated_in_db": 0,
-        "images_uploaded": 0,
-        "sensor_data_subsets_uploaded": 0,
-        "errors": []
+        "images_uploaded_to_minio": 0,
+        "sensor_subsets_uploaded_to_minio": 0,
+        "errors": [],
+        "warnings": [] # Added warnings for non-critical issues
     }
 
-    # 1. Load metadata and sensor data into Pandas DataFrames
+    # 1. Load metadata and sensor data
     try:
         nih_df_content = await nih_metadata_file.read()
-        nih_df = pd.read_csv(io.BytesIO(nih_df_content))
+        nih_df = pd.read_csv(io.BytesIO(nih_df_content), dtype={'Patient ID': str, 'Image Index': str})
         results_summary["total_studies_in_metadata"] = len(nih_df)
 
         sensor_df_content = await sensor_data_file.read()
-        sensor_df = pd.read_csv(io.BytesIO(sensor_df_content))
+        sensor_df = pd.read_csv(io.BytesIO(sensor_df_content), dtype={'ImageIndex': str, 'PatientID_Source': str})
     except Exception as e:
         logger.error(f"Error reading uploaded CSV files: {e}")
         raise HTTPException(status_code=400, detail=f"Error reading CSV files: {str(e)}")
+    finally:
+        await nih_metadata_file.close()
+        await sensor_data_file.close()
 
-    # 2. Process and Upload Images, creating a map of Image Index to MinIO path
-    image_paths_in_minio = {}
-    image_index = 1
+
+    # 2. Process and Upload Images
+    image_paths_in_minio = {} # Maps Image Index (filename) to MinIO object name
     for image_file in image_files:
-        logger.info(f"Processing study for Image Index: {image_index}")
-        image_index += 1
         if not image_file.filename:
-            results_summary["errors"].append({"file": "unknown", "error": "Image file with no filename skipped."})
+            results_summary["warnings"].append({"file": "unknown", "issue": "Image file with no filename skipped."})
+            await image_file.close() # Close even if skipped
             continue
         
-        image_index_from_name = get_image_index_from_filename(image_file.filename) # Assumes filename is Image Index
-        minio_image_object_name = f"{image_index_from_name}" # Store at root of raw-images bucket for simplicity
+        image_index_from_name = get_image_index_from_filename(image_file.filename)
+        minio_image_object_name = f"{image_index_from_name}" # Object name is just the image index
 
         try:
             image_content = await image_file.read()
@@ -85,128 +122,112 @@ async def ingest_batch_data(
                 minio_image_object_name,
                 io.BytesIO(image_content),
                 length=len(image_content),
-                content_type=image_file.content_type or 'application/octet-stream'
+                content_type=image_file.content_type or 'image/png' # Default to image/png
             )
-            image_paths_in_minio[image_index_from_name] = minio_image_object_name # Path within bucket
-            results_summary["images_uploaded"] += 1
-            logger.info(f"Uploaded image '{image_index_from_name}' to MinIO bucket '{BUCKET_RAW_IMAGES}'.")
+            image_paths_in_minio[image_index_from_name] = minio_image_object_name
+            results_summary["images_uploaded_to_minio"] += 1
         except Exception as e:
-            error_msg = f"Failed to upload image {image_index_from_name}: {e}"
+            error_msg = f"Failed to upload image {image_index_from_name} to MinIO: {e}"
             logger.error(error_msg)
             results_summary["errors"].append({"file": image_index_from_name, "error": error_msg})
         finally:
             await image_file.close()
 
     # 3. Iterate through NIH Metadata
-    # Required columns from NIH metadata (adjust if your CSV has different names)
-    # Based on your provided columns:
-    # 'Image Index', 'Finding Labels', 'Follow-up #', 'Patient ID', 'Patient Age', 
-    # 'Patient Gender', 'View Position', 'OriginalImageWidth', 'OriginalImageHeight', 
-    # 'OriginalImagePixelSpacing_x', 'OriginalImagePixelSpacing_y'
-    
-    # Ensure NIH DataFrame has 'Image Index' and 'Patient ID'
-    if 'Image Index' not in nih_df.columns or 'Patient ID' not in nih_df.columns:
-        error_msg = "NIH Metadata CSV must contain 'Image Index' and 'Patient ID' columns."
+    required_nih_cols = ['Image Index', 'Patient ID', 'Patient Age', 'Finding Labels']
+    if not all(col in nih_df.columns for col in required_nih_cols):
+        missing_cols_str = ", ".join([col for col in required_nih_cols if col not in nih_df.columns])
+        error_msg = f"NIH Metadata CSV must contain required columns. Missing: {missing_cols_str}."
         logger.error(error_msg)
-        results_summary["errors"].append({"file": nih_metadata_file.filename, "error": error_msg})
-        raise HTTPException(status_code=400, detail=error_msg)
+        results_summary["errors"].append({"file": nih_metadata_file.filename or "NIH Metadata", "error": error_msg})
+        # Return partial results or raise HTTP Exception
+        return results_summary # Or raise HTTPException
 
-    # Ensure Sensor DataFrame has 'ImageIndex' (or map column name)
-    sensor_image_index_col = 'ImageIndex' # From your sensor generation script
+    sensor_image_index_col = 'ImageIndex'
     if sensor_image_index_col not in sensor_df.columns:
         error_msg = f"Sensor Data CSV must contain '{sensor_image_index_col}' column."
         logger.error(error_msg)
-        results_summary["errors"].append({"file": sensor_data_file.filename, "error": error_msg})
-        raise HTTPException(status_code=400, detail=error_msg)
+        results_summary["errors"].append({"file": sensor_data_file.filename or "Sensor Data", "error": error_msg})
+        return results_summary # Or raise HTTPException
 
-
-    processed_patient_ids = set()
+    processed_patient_ids_source = set()
 
     for index, row in nih_df.iterrows():
+        current_image_index = str(row['Image Index'])
+        patient_id_source = str(row['Patient ID'])
+        
         try:
-            image_index = str(row['Image Index'])
-            patient_id_source = str(row['Patient ID'])
-            
             # a. Patient Data
             patient_age_str = str(row.get('Patient Age', ''))
-            patient_gender = str(row.get('Patient Gender', 'Unknown'))
+            patient_gender = str(row.get('Patient Gender', 'Unknown')) # Handle missing if any
             cleaned_age = clean_age_from_str(patient_age_str)
 
             patient_payload = {
-                "patient_id_source": patient_id_source,
-                "age": cleaned_age,
-                "gender": patient_gender
+                "patient_id_source": patient_id_source, "age": cleaned_age, "gender": patient_gender
             }
             patient_response = await create_or_get_patient(patient_payload)
             if not patient_response or 'id' not in patient_response:
-                results_summary["errors"].append({"image_index": image_index, "error": "Failed to create/get patient record."})
-                continue # Skip to next study if patient handling fails
+                results_summary["errors"].append({"image_index": current_image_index, "error": "Failed to create/get patient record."})
+                continue
             
-            if patient_id_source not in processed_patient_ids:
-                results_summary["patients_created_or_updated"] +=1
-                processed_patient_ids.add(patient_id_source)
+            if patient_id_source not in processed_patient_ids_source:
+                results_summary["patients_created_or_updated"] += 1
+                processed_patient_ids_source.add(patient_id_source)
 
             # b. Study-Specific Sensor Data
-            study_sensor_df = sensor_df[sensor_df[sensor_image_index_col] == image_index]
+            # Ensure ImageIndex in sensor_df is also treated as string for matching
+            study_sensor_df = sensor_df[sensor_df[sensor_image_index_col] == current_image_index]
             study_raw_sensor_path_in_minio = None
             if not study_sensor_df.empty:
                 sensor_csv_bytes = study_sensor_df.to_csv(index=False).encode('utf-8')
-                minio_sensor_object_name = f"{image_index}/sensor_readings.csv"
+                minio_sensor_object_name = f"{current_image_index}/sensor_readings.csv"
                 minio.put_object(
-                    BUCKET_RAW_SENSOR_DATA_PER_STUDY,
-                    minio_sensor_object_name,
-                    io.BytesIO(sensor_csv_bytes),
-                    length=len(sensor_csv_bytes),
-                    content_type='text/csv'
+                    BUCKET_RAW_SENSOR_DATA_PER_STUDY, minio_sensor_object_name,
+                    io.BytesIO(sensor_csv_bytes), len(sensor_csv_bytes), content_type='text/csv'
                 )
-                study_raw_sensor_path_in_minio = minio_sensor_object_name # Path within bucket
-                results_summary["sensor_data_subsets_uploaded"] += 1
-                logger.info(f"Uploaded sensor data for '{image_index}' to MinIO bucket '{BUCKET_RAW_SENSOR_DATA_PER_STUDY}'.")
+                study_raw_sensor_path_in_minio = minio_sensor_object_name
+                results_summary["sensor_subsets_uploaded_to_minio"] += 1
             else:
-                logger.warning(f"No sensor data found for Image Index: {image_index}")
-                results_summary["errors"].append({"image_index": image_index, "warning": "No sensor data found."})
+                results_summary["warnings"].append({"image_index": current_image_index, "issue": "No sensor data found for this study."})
 
-
-            # c. Raw Image Path (already uploaded and mapped)
-            raw_image_path_in_minio_bucket = image_paths_in_minio.get(image_index)
+            # c. Raw Image Path
+            raw_image_path_in_minio_bucket = image_paths_in_minio.get(current_image_index)
             if not raw_image_path_in_minio_bucket:
-                results_summary["errors"].append({"image_index": image_index, "warning": f"Image file not found for metadata entry {image_index}."})
-                # Decide if to continue or skip this study record
-                # For now, we'll allow study record creation even if raw image is missing, path will be None.
+                 results_summary["warnings"].append({"image_index": current_image_index, "issue": f"Image file not found in upload for metadata entry {current_image_index}."})
 
-            # d. Create/Update Study Record
+
+            # d. Create/Update Study Record in DB
             study_payload = {
-                "image_index": image_index,
-                "patient_id_source": patient_id_source, # patient_data_service uses this to link
+                "image_index": current_image_index,
+                "patient_id_source": patient_id_source,
                 "follow_up_number": int(row.get('Follow-up #', 0)),
                 "view_position": str(row.get('View Position', '')),
                 "finding_labels": str(row.get('Finding Labels', 'No Finding')),
-                "raw_image_path": raw_image_path_in_minio_bucket, # This is path *within* BUCKET_RAW_IMAGES
-                "raw_sensor_data_path": study_raw_sensor_path_in_minio, # Path *within* BUCKET_RAW_SENSOR_DATA_PER_STUDY
+                "raw_image_path": raw_image_path_in_minio_bucket,
+                "raw_sensor_data_path": study_raw_sensor_path_in_minio,
                 "original_image_width": int(row.get('OriginalImageWidth', 0)) if pd.notna(row.get('OriginalImageWidth')) else None,
                 "original_image_height": int(row.get('OriginalImageHeight', 0)) if pd.notna(row.get('OriginalImageHeight')) else None,
                 "original_pixel_spacing_x": float(row.get('OriginalImagePixelSpacing_x', 0.0)) if pd.notna(row.get('OriginalImagePixelSpacing_x')) else None,
                 "original_pixel_spacing_y": float(row.get('OriginalImagePixelSpacing_y', 0.0)) if pd.notna(row.get('OriginalImagePixelSpacing_y')) else None,
             }
             
-            study_response = await create_or_update_study(study_payload)
-            if not study_response or 'id' not in study_response:
-                results_summary["errors"].append({"image_index": image_index, "error": "Failed to create/update study record in DB."})
+            study_db_response = await create_or_update_study(study_payload)
+            if not study_db_response or 'id' not in study_db_response:
+                results_summary["errors"].append({"image_index": current_image_index, "error": "Failed to create/update study record in DB."})
                 continue
             
-            results_summary["studies_created_or_updated_in_db"] += 1
-            results_summary["studies_processed_successfully"] += 1
-
+            results_summary["studies_ingested_successfully"] += 1
+            
+            # e. Add preprocessing tasks to background
+            background_tasks.add_task(trigger_preprocessing_tasks, current_image_index)
+            results_summary["preprocessing_tasks_queued"] += 1
+            
         except Exception as e:
-            error_msg = f"Error processing row {index} (Image Index: {row.get('Image Index', 'N/A')}): {e}"
-            logger.error(error_msg, exc_info=True) # Log with stack trace
-            results_summary["errors"].append({"image_index": row.get('Image Index', 'N/A'), "error": str(e)})
+            error_msg = f"Error processing metadata row {index} (Image Index: {current_image_index}): {e}"
+            logger.error(error_msg, exc_info=True)
+            results_summary["errors"].append({"image_index": current_image_index, "error": str(e)})
 
-    # Close uploaded files (FastAPI might do this automatically for UploadFile, but good practice)
-    await nih_metadata_file.close()
-    await sensor_data_file.close()
-
-    logger.info(f"Batch ingestion summary: {results_summary}")
+    logger.info(f"Batch ingestion processing loop finished. Summary: {results_summary}")
     return results_summary
 
 @app.get("/health")

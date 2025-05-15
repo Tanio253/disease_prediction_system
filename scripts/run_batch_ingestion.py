@@ -19,7 +19,7 @@ IMAGES_DIR_PATH = "./data/raw/images/" # Directory containing all 5606 .png imag
 
 # If you want to test with a smaller number of images first:
 # MAX_IMAGES_TO_SEND = 10 # Set to None to send all found images
-MAX_IMAGES_TO_SEND = 1 # Send all images matching the pattern
+MAX_IMAGES_TO_SEND = 500 # Send all images matching the pattern
 
 # Timeout for the HTTP request (in seconds)
 # Ingesting many files can take time.

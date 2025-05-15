@@ -3,7 +3,7 @@ import logging
 
 from .config import API_GATEWAY_BASE_PATH
 from .routers import predict, ingest, patient_data # Import your routers
-
+from .routers import predict, ingest, patient_data, image_processing, tabular_processing 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,7 +13,8 @@ app = FastAPI(
     description="Single entry point for all disease prediction backend services.",
     version="0.1.0"
 )
-
+app.include_router(image_processing.router, prefix=f"{API_GATEWAY_BASE_PATH}/image-preprocess", tags=["Image Preprocessing Service"])
+app.include_router(tabular_processing.router, prefix=f"{API_GATEWAY_BASE_PATH}/tabular-preprocess", tags=["Tabular Preprocessing Service"])
 @app.on_event("startup")
 async def startup_event():
     logger.info("API Gateway starting up...")

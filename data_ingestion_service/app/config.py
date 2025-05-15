@@ -10,6 +10,12 @@ MINIO_USE_SSL = os.getenv("MINIO_USE_SSL", "False").lower() == "true"
 
 PATIENT_DATA_SERVICE_URL = os.getenv("PATIENT_DATA_SERVICE_URL", "http://patient_data_service:8000")
 
+API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://api_gateway:8080") # Base URL of the gateway
+
+IMAGE_PREPROCESSING_ENDPOINT = f"{API_GATEWAY_URL}/api/v1/image-preprocess/preprocess/"
+TABULAR_NIH_PREPROCESSING_ENDPOINT = f"{API_GATEWAY_URL}/api/v1/tabular-preprocess/preprocess/nih-metadata/"
+TABULAR_SENSOR_PREPROCESSING_ENDPOINT = f"{API_GATEWAY_URL}/api/v1/tabular-preprocess/preprocess/sensor-data/"
+
 # MinIO Bucket Names (centralize if used in multiple places, but good here for clarity)
 BUCKET_RAW_IMAGES = "raw-images"
 BUCKET_RAW_SENSOR_DATA_PER_STUDY = "raw-sensor-data-per-study"

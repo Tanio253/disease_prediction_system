@@ -11,7 +11,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_DEFAULT_BUCKETS: "raw-images,raw-tabular,raw-sensor-data,processed-images,processed-tabular,processed-sensor-data,models-store"
+      MINIO_DEFAULT_BUCKETS: "raw-images,raw-tabular,raw-sensor-data,raw-sensor-data-per-study,processed-images,processed-tabular,processed-sensor-data,models-store"
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -69,6 +69,7 @@ services:
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       PATIENT_DATA_SERVICE_URL: "http://patient_data_service:8000"
+      API_GATEWAY_URL: "http://api_gateway:8080"
       IMAGE_PREPROCESSING_SERVICE_URL: "http://image_preprocessing_service:8002" # To notify
       TABULAR_PREPROCESSING_SERVICE_URL: "http://tabular_preprocessing_service:8003" # To notify
       SENSOR_GENERATION_SERVICE_URL: "http://sensor_data_generation_service:8006" # To notify
@@ -207,6 +208,8 @@ services:
       DISEASE_PREDICTION_SERVICE_URL_GW: "http://disease_prediction_service:8004"
       DATA_INGESTION_SERVICE_URL_GW: "http://data_ingestion_service:8001"
       PATIENT_DATA_SERVICE_URL_GW: "http://patient_data_service:8000"
+      IMAGE_PREPROCESSING_SERVICE_URL_GW: "http://image_preprocessing_service:8002"
+      TABULAR_PREPROCESSING_SERVICE_URL_GW: "http://tabular_preprocessing_service:8003"
       # MODEL_TRAINING_SERVICE_URL_GW: "http://model_training_service:TRAINING_API_PORT" # If applicable
     depends_on: # Gateway should ideally wait for backend services to be at least started
       - disease_prediction_service

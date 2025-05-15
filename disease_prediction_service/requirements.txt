@@ -11,7 +11,7 @@ torch==2.1.0+cpu
 torchvision==0.16.0+cpu
 --extra-index-url https://download.pytorch.org/whl/cpu
 pandas
-numpy
+numpy<2.0 # For data manipulation and numerical operations
 scikit-learn # For OneHotEncoder if re-instantiated
 
 Pillow # For image loading

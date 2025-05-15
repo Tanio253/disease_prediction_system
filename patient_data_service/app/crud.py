@@ -35,7 +35,7 @@ def update_patient(db: Session, patient_id_source: str, patient_update: schemas.
     db_patient = get_patient_by_source_id(db, patient_id_source)
     if not db_patient:
         return None
-    update_data = patient_update.model_dump(exclude_unset=True)
+    update_data = patient_update.dict(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_patient, key, value)
     db.add(db_patient)
@@ -64,7 +64,7 @@ def create_study_for_patient(db: Session, study_create_data: schemas.StudyCreate
         # This could also be an update if image_index is a key for updates.
         return existing_study # Or raise IntegrityError / custom exception
 
-    db_study_data = study_create_data.model_dump(exclude={"patient_id_source"}) # Exclude this as we use internal id
+    db_study_data = study_create_data.dict(exclude={"patient_id_source"}) # Exclude this as we use internal id
     db_study = models.Study(**db_study_data, patient_id=patient_internal_id)
     db.add(db_study)
     try:
@@ -84,7 +84,7 @@ def update_study_by_image_index(db: Session, image_index: str, study_update: sch
     db_study = get_study_by_image_index(db, image_index)
     if not db_study:
         return None
-    update_data = study_update.model_dump(exclude_unset=True) # only update fields that are set
+    update_data = study_update.dict(exclude_unset=True) # only update fields that are set
     for key, value in update_data.items():
         setattr(db_study, key, value)
     db.add(db_study)
