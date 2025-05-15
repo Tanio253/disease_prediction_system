@@ -62,7 +62,7 @@ The system follows a microservice architecture. An API Gateway serves as the sin
 ## Usage
 
 1.  **Data Ingestion (Batch Script):**
-    * Place data in `./data/raw/images/` and `./data/raw/tabular/`.
+    * Place data in `./data/raw/images/` and `./data/raw/tabular/`. Currently, I used a subset of NIH Chest X-ray Dataset, available at: `https://www.kaggle.com/datasets/nih-chest-xrays/sample`.
     * Run the ingestion script:
         ```bash
         python scripts/run_batch_ingestion.py
