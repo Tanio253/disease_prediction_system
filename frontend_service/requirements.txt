@@ -1,0 +1,4 @@
+gradio
+httpx
+python-dotenv
+pandas # For formatting the output DataFrame if needed

@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+pydantic
+minio
+python-dotenv
+python-multipart # For form data and file uploads
+httpx # If calling other services (though we aim to reuse code)
+
+# ML Stack
+torch
+torchvision
+pandas
+numpy
+scikit-learn # For OneHotEncoder if re-instantiated
+
+Pillow # For image loading

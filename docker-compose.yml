@@ -1,0 +1,206 @@
+version: '3.9'
+
+services:
+  minio:
+    image: minio/minio:latest # Use a recent, specific version
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console UI
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: "raw-images,raw-tabular,raw-sensor-data,processed-images,processed-tabular,processed-sensor-data,models-store"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  postgres_db:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: dps_user # disease_prediction_system_user
+      POSTGRES_PASSWORD: dps_password
+      POSTGRES_DB: dps_db
+    volumes:
+      - postgres_app_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dps_user -d dps_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  patient_data_service:
+    build: ./patient_data_service
+    ports:
+      - "8000:8000" # Changed port to avoid conflict if gateway uses 8000 later
+    volumes:
+      - ./patient_data_service/app:/app
+    environment:
+      DATABASE_URL: "postgresql://dps_user:dps_password@postgres_db:5432/dps_db"
+      # For Alembic auto-migrations:
+      PYTHONUNBUFFERED: 1 # Ensures logs are sent correctly
+    depends_on:
+      postgres_db:
+        condition: service_healthy
+    # The command will run Alembic migrations then start Uvicorn
+    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  data_ingestion_service:
+    build: ./data_ingestion_service
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./data_ingestion_service/app:/app
+      - ./data/raw:/app/upload_temp # Temp mount for easy file access if uploading from host
+    environment:
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      PATIENT_DATA_SERVICE_URL: "http://patient_data_service:8000"
+      IMAGE_PREPROCESSING_SERVICE_URL: "http://image_preprocessing_service:8002" # To notify
+      TABULAR_PREPROCESSING_SERVICE_URL: "http://tabular_preprocessing_service:8003" # To notify
+      SENSOR_GENERATION_SERVICE_URL: "http://sensor_data_generation_service:8006" # To notify
+    depends_on:
+      minio:
+        condition: service_healthy
+      patient_data_service:
+        condition: service_healthy # Ensure patient service is fully up
+
+  image_preprocessing_service:
+    build: ./image_preprocessing_service
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./image_preprocessing_service/app:/app
+    environment:
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      PATIENT_DATA_SERVICE_URL: "http://patient_data_service:8000" # To update paths
+    depends_on:
+      minio:
+        condition: service_healthy
+      patient_data_service:
+        condition: service_healthy
+
+  tabular_preprocessing_service:
+    build: ./tabular_preprocessing_service
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./tabular_preprocessing_service/app:/app
+    environment:
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      PATIENT_DATA_SERVICE_URL: "http://patient_data_service:8000" # To update paths
+    depends_on:
+      minio:
+        condition: service_healthy
+      patient_data_service:
+        condition: service_healthy
+
+  # Model training service can be run as a command or have an API to trigger jobs
+  # For now, let's assume scripts are run manually inside the container or via docker-compose run
+  model_training_service:
+    build: ./model_training_service
+    volumes:
+      - ./model_training_service:/app # For development, syncs code
+      # If you have local pre-processed data for faster iteration (not pulling from MinIO every time during dev):
+      # - ./data/processed:/app/local_processed_data 
+      # This volume is for actual model output to MinIO, not local mount unless specifically needed
+    environment:
+      PYTHONUNBUFFERED: 1 # For better logging in Docker
+      PATIENT_DATA_SERVICE_URL: "http://patient_data_service:8000"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      # Add other necessary env vars for config_training.py if not hardcoded
+      # e.g., DEVICE: "cuda" or "cpu"
+      # PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:512" # Example PyTorch CUDA tuning
+    # To run the training script directly when the container starts:
+    command: ["python", "-m", "scripts.train_fusion_model"]
+    # If you add a FastAPI wrapper later in app/main.py:
+    # command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005", "--reload"]
+    # ports: # Only if exposing FastAPI wrapper
+    #   - "8005:8005" 
+    depends_on:
+      minio:
+        condition: service_healthy
+      patient_data_service: # Training depends on data being available and registered
+        condition: service_healthy # or service_started if it doesn't have a healthcheck
+      # Potentially depends on preprocessing services if training triggers them,
+      # but current design has training consume already processed data.
+    deploy: # Only if using GPU and Docker Swarm or a similar orchestrator that understands this
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              #count: 1 # or 'all'
+              capabilities: [gpu]
+
+  disease_prediction_service:
+    build: ./disease_prediction_service
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./disease_prediction_service/app:/app
+      - models_store_volume:/app/models # Mount point to access models
+    environment:
+      MINIO_ENDPOINT: "minio:9000" # If models are pulled from MinIO at runtime
+      MINIO_ACCESS_KEY: "minioadmin"
+      MINIO_SECRET_KEY: "minioadmin"
+      MODEL_DIR: "/app/models" # Path to models within the container
+      IMAGE_PREPROCESSING_SERVICE_URL: "http://image_preprocessing_service:8002" # For on-the-fly preprocessing
+      TABULAR_PREPROCESSING_SERVICE_URL: "http://tabular_preprocessing_service:8003" # For on-the-fly preprocessing
+    depends_on:
+      minio: # If loading models dynamically
+        condition: service_healthy
+      # model_training_service: # Not a hard runtime dependency unless it provides a live service
+      image_preprocessing_service:
+         condition: service_started # or healthy if healthcheck defined
+      tabular_preprocessing_service:
+         condition: service_started # or healthy
+
+  frontend_service:
+    build: ./frontend_service
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./frontend_service:/app
+    environment:
+      # Changed from direct service URL to Gateway URL
+      DISEASE_PREDICTION_SERVICE_URL: "http://api_gateway:8080/api/v1/predict/predict/" # Note the extra /predict/ at the end if your frontend calls /predict/
+      # If frontend needs to call other services via gateway, add those URLs too:
+      # DATA_INGESTION_API_URL: "http://api_gateway:8080/api/v1/ingest/ingest/batch/"
+    depends_on:
+      - api_gateway # Frontend now depends on the gateway
+      # - disease_prediction_service # Indirectly through gateway
+      # - data_ingestion_service # Indirectly through gateway
+
+  api_gateway:
+    build: ./api_gateway
+    ports:
+      - "8080:8080" # Frontend will call localhost:8080
+    environment:
+      PYTHONUNBUFFERED: 1
+      DISEASE_PREDICTION_SERVICE_URL_GW: "http://disease_prediction_service:8004"
+      DATA_INGESTION_SERVICE_URL_GW: "http://data_ingestion_service:8001"
+      PATIENT_DATA_SERVICE_URL_GW: "http://patient_data_service:8000"
+      # MODEL_TRAINING_SERVICE_URL_GW: "http://model_training_service:TRAINING_API_PORT" # If applicable
+    depends_on: # Gateway should ideally wait for backend services to be at least started
+      - disease_prediction_service
+      - data_ingestion_service
+      - patient_data_service
+      # - model_training_service # If it has an API used by gateway
+
+volumes:
+  minio_data:
+  postgres_app_data:
+  models_store_volume: # Ensures models are persisted if training service writes here

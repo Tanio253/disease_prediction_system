@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic[email]
+alembic
+python-dotenv # For local development if not using Docker env vars directly
+# Add other necessary libraries, e.g., for specific data types if needed

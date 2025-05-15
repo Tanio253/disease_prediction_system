@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+httpx # For making asynchronous HTTP requests to backend services
+python-dotenv

@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+minio
+python-dotenv
+Pillow
+torch
+torchvision
+# numpy # Often a dependency of torch, but good to list explicitly if used directly for .npy
+# opencv-python-headless # If more advanced image ops are needed beyond Pillow/Torchvision
