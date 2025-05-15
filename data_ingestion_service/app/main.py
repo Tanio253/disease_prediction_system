@@ -42,6 +42,7 @@ async def ingest_batch_data(
     image_files: List[UploadFile] = File(..., description="List of X-ray image files (e.g., PNGs)"),
     minio: Minio = Depends(get_minio_client)
 ):
+    logger.info("Starting batch ingestion process...")
     results_summary = {
         "total_studies_in_metadata": 0,
         "studies_processed_successfully": 0,
@@ -66,7 +67,10 @@ async def ingest_batch_data(
 
     # 2. Process and Upload Images, creating a map of Image Index to MinIO path
     image_paths_in_minio = {}
+    image_index = 1
     for image_file in image_files:
+        logger.info(f"Processing study for Image Index: {image_index}")
+        image_index += 1
         if not image_file.filename:
             results_summary["errors"].append({"file": "unknown", "error": "Image file with no filename skipped."})
             continue

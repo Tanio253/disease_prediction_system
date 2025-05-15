@@ -35,7 +35,7 @@ async def forward_request(request: Request, target_url: str, target_path: str):
                 url=full_target_url,
                 headers=headers_to_forward,
                 content=body_content, # Send raw bytes
-                timeout=120.0 # General timeout, adjust as needed
+                timeout=300.0 # General timeout, adjust as needed
             )
 
             # Log backend response status

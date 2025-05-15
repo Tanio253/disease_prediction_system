@@ -1,10 +1,8 @@
 fastapi
 uvicorn[standard]
-pydantic
+pydantic<2
 httpx
 pandas
 minio
 python-multipart # For file uploads
 python-dotenv
-# For in-memory CSV creation
-io

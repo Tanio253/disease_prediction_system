@@ -131,7 +131,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 label="Disease Predictions",
                 col_count=(2, "fixed"),
                 wrap=True,
-                max_rows=15 # For the 15 classes
             )
 
     predict_button.click(

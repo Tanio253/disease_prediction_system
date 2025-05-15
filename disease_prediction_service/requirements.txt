@@ -1,14 +1,15 @@
 fastapi
 uvicorn[standard]
-pydantic
+pydantic<2
 minio
 python-dotenv
 python-multipart # For form data and file uploads
 httpx # If calling other services (though we aim to reuse code)
 
-# ML Stack
-torch
-torchvision
+
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 pandas
 numpy
 scikit-learn # For OneHotEncoder if re-instantiated

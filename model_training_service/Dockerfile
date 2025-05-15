@@ -6,18 +6,20 @@ WORKDIR /app
 # Ensure your base OS image for Docker (if not this one) and host have compatible CUDA drivers.
 # This section is highly dependent on your target deployment environment (CPU vs GPU)
 # For CPU-only:
-# RUN pip config set global.index-url https://download.pytorch.org/whl/cpu
+RUN pip config set global.index-url https://download.pytorch.org/whl/cpu
 # For CUDA 11.8:
 # RUN pip config set global.index-url https://download.pytorch.org/whl/cu118
 # For CUDA 12.1:
 # RUN pip config set global.index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements.txt .
+RUN pip install --no-cache-dir torch torchvision
+RUN pip config unset global.index-url
 RUN pip install --no-cache-dir -r requirements.txt
 # RUN pip config unset global.index-url # Unset after PyTorch install if you set it
 
 COPY ./scripts /app/scripts
-COPY ./app /app/app # For the FastAPI wrapper if you implement it
+COPY ./app /app/app 
 
 # Set PYTHONPATH if your imports are structured with a root package e.g. model_training_service.scripts
 ENV PYTHONPATH /app

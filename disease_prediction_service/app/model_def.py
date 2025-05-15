@@ -8,7 +8,6 @@ class FusionMLP(nn.Module):
     def __init__(self, image_feature_dim: int, nih_tabular_feature_dim: int, sensor_feature_dim: int,
                  hidden_dims_mlp: list, num_classes: int, dropout_rate: float):
         super(FusionMLP, self).__init__()
-        
         self.total_input_dim = image_feature_dim + nih_tabular_feature_dim + sensor_feature_dim
         
         layers = []

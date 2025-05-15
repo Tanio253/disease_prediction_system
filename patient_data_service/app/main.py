@@ -117,10 +117,4 @@ def read_studies_for_training(skip: int = 0, limit: int = 10000, db: Session = D
 @app.get("/health")
 async def health_check():
     # You could add a simple DB query here to check connection
-    # try:
-    #     db: Session = next(get_db())
-    #     db.execute(text("SELECT 1"))
-    #     return {"status": "healthy", "database_connection": "ok"}
-    # except Exception as e:
-    #     return {"status": "unhealthy", "database_connection": "error", "detail": str(e)}
     return {"status": "healthy"}

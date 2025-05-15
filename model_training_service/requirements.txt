@@ -1,0 +1,20 @@
+# Common utilities
+python-dotenv
+requests
+pandas
+numpy
+scikit-learn # For MultiLabelBinarizer, metrics
+minio
+PyYAML # If you decide to use YAML for more complex configs later
+
+# PyTorch ML Stack
+torch
+torchvision
+# torchaudio # Not strictly needed for this project currently
+torchmetrics # For easier metric calculation with PyTorch
+
+# --- Optional: For FastAPI wrapper ---
+# fastapi
+# uvicorn[standard]
+# pydantic
+# httpx # For async calls from API wrapper

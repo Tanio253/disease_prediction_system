@@ -1,11 +1,12 @@
 fastapi
 uvicorn[standard]
-pydantic
+pydantic<2  # Use Pydantic v1 for compatibility
 httpx
-minio
 python-dotenv
-Pillow
-torch
-torchvision
-# numpy # Often a dependency of torch, but good to list explicitly if used directly for .npy
-# opencv-python-headless # If more advanced image ops are needed beyond Pillow/Torchvision
+minio
+Pillow  # Lightweight image handling
+
+# PyTorch CPU versions
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu

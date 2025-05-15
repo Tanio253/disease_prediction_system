@@ -1,11 +1,11 @@
 FROM python:3.10-slim
 
-WORKDIR /app
-
-COPY requirements.txt .
+WORKDIR /service_root 
+COPY ./tabular_preprocessing_service/requirements.txt ./requirements.txt 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./app /app
+COPY ./tabular_preprocessing_service/app ./app 
 
 EXPOSE 8003
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
+# Uvicorn now targets the 'app' package, then 'main' module, then 'app' instance
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]

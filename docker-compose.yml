@@ -38,26 +38,32 @@ services:
   patient_data_service:
     build: ./patient_data_service
     ports:
-      - "8000:8000" # Changed port to avoid conflict if gateway uses 8000 later
+      - "8000:8000"
     volumes:
-      - ./patient_data_service/app:/app
+      - ./patient_data_service:/app # Mount the entire service directory to /app
     environment:
       DATABASE_URL: "postgresql://dps_user:dps_password@postgres_db:5432/dps_db"
-      # For Alembic auto-migrations:
-      PYTHONUNBUFFERED: 1 # Ensures logs are sent correctly
+      PYTHONUNBUFFERED: 1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s 
     depends_on:
       postgres_db:
         condition: service_healthy
-    # The command will run Alembic migrations then start Uvicorn
-    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   data_ingestion_service:
-    build: ./data_ingestion_service
+    build:
+      context: . # Build from project root
+      dockerfile: ./data_ingestion_service/Dockerfile # Specify Dockerfile location
     ports:
       - "8001:8001"
     volumes:
-      - ./data_ingestion_service/app:/app
-      - ./data/raw:/app/upload_temp # Temp mount for easy file access if uploading from host
+      # Mount your local 'app' directory for the service to the 'app' directory inside the container's WORKDIR
+      - ./data_ingestion_service/app:/service_root/app
     environment:
       MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -73,11 +79,13 @@ services:
         condition: service_healthy # Ensure patient service is fully up
 
   image_preprocessing_service:
-    build: ./image_preprocessing_service
+    build:
+      context: . # Build from project root
+      dockerfile: ./image_preprocessing_service/Dockerfile # Specify Dockerfile location
     ports:
       - "8002:8002"
     volumes:
-      - ./image_preprocessing_service/app:/app
+      - ./image_preprocessing_service/app:/service_root/app
     environment:
       MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -90,11 +98,13 @@ services:
         condition: service_healthy
 
   tabular_preprocessing_service:
-    build: ./tabular_preprocessing_service
+    build:
+      context: . # Build from project root
+      dockerfile: ./tabular_preprocessing_service/Dockerfile # Specify Dockerfile location
     ports:
       - "8003:8003"
     volumes:
-      - ./tabular_preprocessing_service/app:/app
+      - ./tabular_preprocessing_service/app:/service_root/app
     environment:
       MINIO_ENDPOINT: "minio:9000"
       MINIO_ACCESS_KEY: "minioadmin"
@@ -146,12 +156,14 @@ services:
               capabilities: [gpu]
 
   disease_prediction_service:
-    build: ./disease_prediction_service
+    build:
+      context: . # Build from project root
+      dockerfile: ./disease_prediction_service/Dockerfile
     ports:
       - "8004:8004"
     volumes:
-      - ./disease_prediction_service/app:/app
-      - models_store_volume:/app/models # Mount point to access models
+      - ./disease_prediction_service/app:/service_root/app
+      - models_store_volume:/service_root/app/models # Mount point to access models
     environment:
       MINIO_ENDPOINT: "minio:9000" # If models are pulled from MinIO at runtime
       MINIO_ACCESS_KEY: "minioadmin"
@@ -185,7 +197,9 @@ services:
       # - data_ingestion_service # Indirectly through gateway
 
   api_gateway:
-    build: ./api_gateway
+    build:
+      context: . # Build from project root
+      dockerfile: ./api_gateway/Dockerfile
     ports:
       - "8080:8080" # Frontend will call localhost:8080
     environment:

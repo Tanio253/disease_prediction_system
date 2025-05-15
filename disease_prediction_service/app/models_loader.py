@@ -103,9 +103,9 @@ def load_fusion_model():
     image_feature_dim=IMAGE_FEATURE_DIM_PRED,
     nih_tabular_feature_dim=NIH_TABULAR_FEATURE_DIM_PRED,
     sensor_feature_dim=SENSOR_FEATURE_DIM_PRED,
-    hidden_dims_mlp=HIDDEN_DIMS_MLP_FOR_PRED, # From config or hardcoded to match training
+    hidden_dims_mlp=HIDDEN_DIMS_MLP_FOR_PRED, # Add this to config.py
     num_classes=NUM_CLASSES_PRED,
-    dropout_rate=DROPOUT_RATE_FOR_PRED # From config or hardcoded
+    dropout_rate=DROPOUT_RATE_FOR_PRED # Add this to config.py
 )
 
             # A better FusionMLP definition in model_def.py would be:

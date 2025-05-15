@@ -1,11 +1,13 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+WORKDIR /service_root 
 
-COPY requirements.txt .
+COPY ./data_ingestion_service/requirements.txt ./requirements.txt 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./app /app
+COPY ./data_ingestion_service/app ./app 
 
 EXPOSE 8001
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+# Python interpreter will be run from /service_root
+# Uvicorn will look for package 'app', then module 'main', then object 'app'
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
