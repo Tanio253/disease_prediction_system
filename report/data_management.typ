@@ -48,7 +48,7 @@ Preprocessing is handled by specialized services:
 
 // Remember to create this diagram and place it in the images folder
 #figure(
-  image("images/image_preprocessing.png", width: 40%),
+  image("images/image_preprocessing.png", width: 30%),
   caption: [Detailed diagram for Image Preprocessing flow.]
 )
 
