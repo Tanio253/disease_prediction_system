@@ -1,6 +1,9 @@
 #pagebreak()
 = Microservice Details
-
+#figure(
+  image("assets/core_system.png", width: 100%),
+  caption: [Core System Architecture Diagram. Shows the main microservices and their interactions, including the API Gateway, Data Ingestion Service, Patient Data Service, Image Preprocessing Service, Tabular Preprocessing Service, Model Training Service, Disease Prediction Service, and Frontend Service.]
+)
 == API Gateway (`api_gateway`)
 The API Gateway serves as the unified entry point for all incoming requests to the system. It simplifies client interaction by providing a single interface and routes requests to the appropriate downstream microservices.
 
@@ -40,12 +43,12 @@ This service is responsible for handling the initial intake of various data type
     // - `POST /ingest/tabular/sensor/`: [PLACEHOLDER: Endpoint for sensor data ingestion - if implemented or planned].
 - *Tesing Endpoints:*
     #figure(
-  image("images/minIO.png", width: 70%),
+  image("assets/minIO.png", width: 70%),
   caption: [Data Ingested successfully to MinIO. This screenshot shows the MinIO web interface with the `raw-images` and `raw-sensor-data-per-study` buckets populated with files.]
 )
 
 #figure(
-  image("images/minIO2.png", width: 70%),
+  image("assets/minIO2.png", width: 70%),
   caption: [After ingestion, the `data_ingestion_service` triggers the `image_preprocessing_service` and `tabular_preprocessing_service` to process the raw data. This screenshot shows the MinIO web interface with the `processed-sensor-features` buckets populated with processed files.]
 )
 == Patient Data Service (`patient_data_service`)

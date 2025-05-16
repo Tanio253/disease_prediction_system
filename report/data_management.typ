@@ -22,7 +22,7 @@ The ingestion process is initiated through the `data_ingestion_service`:
 
 // Remember to create this diagram and place it in the images folder
 #figure(
-  image("images/data_ingestion_service.png", width: 100%),
+  image("assets/data_ingestion_service.png", width: 100%),
   caption: [Data Ingestion Flow Diagram. Details the sequence from batch ingestion to storage and preprocessing triggers.]
 )
 
@@ -49,7 +49,7 @@ Preprocessing is handled by specialized services:
 
 // Remember to create this diagram and place it in the images folder
 #figure(
-  image("images/image_preprocessing.png", width: 150%),
+  image("assets/image_preprocessing.png", width: 150%),
   caption: [Detailed diagram for Image Preprocessing flow.]
 )
 

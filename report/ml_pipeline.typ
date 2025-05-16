@@ -15,7 +15,7 @@ The core prediction model is a multi-modal fusion network, specifically an `Atte
 - The output layer uses a sigmoid activation function for each class, suitable for multi-label disease prediction. The number of output neurons corresponds to the number of disease classes (14 diseases + "No Finding" as defined in `config_training.py`).
 
 #figure(
-  image("images/attention.png", width: 150%),
+  image("assets/attention.png", width: 150%),
   caption: [Diagram of the Attention Fusion Model Architecture. Shows input feature vectors, modality-specific processing, attention mechanism, MLP layers, and multi-label output.]
 )
 
@@ -26,7 +26,7 @@ The training process is orchestrated by the `model_training_service` using scrip
     - Fetches study metadata (including feature paths and labels) from the `patient_data_service`.
     - Creates a custom PyTorch `Dataset` (`FusionDataset`). This dataset is responsible for:
         - Loading the processed image features, NIH tabular features, and sensor features from their respective MinIO buckets for each study.
-        - Generating `nih_attention_mask` and `sensor_attention_mask`. These binary masks indicate whether the NIH tabular data or sensor data, respectively, is present for a given sample. *This is crucial for handling missing modalities*, as the `data_loader.py` checks for the existence of feature files.
+        - Generating `nih_attention_mask` and `sensor_attention_mask` randomly with a ratio of 0.15 each. These binary masks indicate whether the NIH tabular data or sensor data, respectively, is present for a given sample. *This is crucial for handling missing modalities*, as the `data_loader.py` checks for the existence of feature files.
     - Labels (`Finding Labels`) are multi-hot encoded using `MultiLabelBinarizer` from scikit-learn. The `ALL_DISEASE_CLASSES` list in `config_training.py` ensures consistent class ordering.
     - Uses PyTorch `DataLoader` for batching and shuffling.
 2.  *Training Loop:*
