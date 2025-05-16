@@ -15,7 +15,7 @@ The core prediction model is a multi-modal fusion network, specifically an `Atte
 - The output layer uses a sigmoid activation function for each class, suitable for multi-label disease prediction. The number of output neurons corresponds to the number of disease classes (14 diseases + "No Finding" as defined in `config_training.py`).
 
 #figure(
-  image("images/attention.png", width: 50%),
+  image("images/attention.png", width: 150%),
   caption: [Diagram of the Attention Fusion Model Architecture. Shows input feature vectors, modality-specific processing, attention mechanism, MLP layers, and multi-label output.]
 )
 

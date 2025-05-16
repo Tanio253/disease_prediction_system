@@ -19,6 +19,6 @@
 
 // Remember to create this diagram and place it in the images folder
 #figure(
-  image("images/frontend.png", width: 90%),
+  image("images/frontend.png", width: 100%),
   caption: [Prediction Workflow Diagram. Illustrates the sequence from user input in Gradio to the final prediction display.]
 )
